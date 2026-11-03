@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.28)
 
 # The release workflow bumps this version through scripts/version_updater.py. 0.0.0 marks an unreleased tree.
-project(AcerFan VERSION 0.0.0 DESCRIPTION "Temperature-aware fan control tray app for Acer laptops" LANGUAGES CXX RC)
+project(AcerFan VERSION 0.1.0 DESCRIPTION "Temperature-aware fan control tray app for Acer laptops" LANGUAGES CXX RC)
 
 if(NOT MSVC)
     message(FATAL_ERROR "AcerFan builds with MSVC: it uses the WMI and Task Scheduler COM headers of the Windows SDK.")
