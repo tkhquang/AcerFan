@@ -104,7 +104,7 @@ namespace
             "[control]\r\n"
             "poll_ms = 1000\r\n"
             "baseline_s = 30\r\n"
-            "min_samples = 0\r\n"
+            "down_hold_polls = 0\r\n"
             "enter_polls = abc\r\n"
             "[state]\r\n"
             "mode = turbo\r\n"
@@ -113,14 +113,14 @@ namespace
         const ControllerSettings &controller = loaded.config.controller;
         const ControllerSettings defaults = built_in_defaults().controller;
 
-        // The CPU curve, min_samples, enter_polls and the mode are invalid.
+        // The CPU curve, down_hold_polls, enter_polls and the mode are invalid.
         CHECK(loaded.warnings.size() == 4);
         CHECK(controller.cpu_curve.to_string() == CPU_CURVE);
         CHECK(controller.gpu_curve.to_string() == "70:30, 90:100");
         CHECK(loaded.config.poll_interval == std::chrono::milliseconds{1000});
         // 30 seconds at one poll per second.
         CHECK(controller.baseline_polls == 30);
-        CHECK(controller.min_samples == defaults.min_samples);
+        CHECK(controller.down_hold_polls == defaults.down_hold_polls);
         CHECK(controller.enter_polls == defaults.enter_polls);
         CHECK(loaded.config.mode == UserMode::Curve);
     }

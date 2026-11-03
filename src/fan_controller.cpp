@@ -45,7 +45,7 @@ namespace AcerFan
     {
         m_failed_polls = 0;
         m_failsafe = false;
-        if (m_samples < m_settings.min_samples)
+        if (m_samples < m_settings.baseline_polls)
         {
             ++m_samples;
         }
@@ -60,7 +60,7 @@ namespace AcerFan
         if (m_command.mode == FanMode::FirmwareAuto)
         {
             m_hot_polls = demand > 0 ? m_hot_polls + 1 : 0;
-            if (m_hot_polls >= m_settings.enter_polls && m_samples >= m_settings.min_samples)
+            if (m_hot_polls >= m_settings.enter_polls && m_samples >= m_settings.baseline_polls)
             {
                 m_command = {FanMode::Custom, std::max(demand, m_floor_percent)};
                 m_cool_polls = 0;

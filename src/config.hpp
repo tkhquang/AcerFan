@@ -44,7 +44,7 @@ namespace AcerFan
         /// Time between two checks that no other app changed the fan mode.
         std::chrono::seconds reassert_interval{10};
         /// Time between two status lines in AcerFan.log, 0 for none.
-        std::chrono::seconds status_log_interval{10};
+        std::chrono::seconds status_log_interval{60};
         /// Names the mode that the user picked in the tray menu.
         UserMode mode{UserMode::Curve};
 

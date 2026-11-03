@@ -57,12 +57,10 @@ namespace AcerFan
         FanCurve cpu_curve;
         /// Maps the GPU baseline temperature to a fan percent.
         FanCurve gpu_curve;
-        /// Number of recent readings in the baseline window.
-        int baseline_polls{30};
+        /// Number of recent readings in the baseline window. AcerFan takes over only after one full window.
+        int baseline_polls{60};
         /// Percentile of the baseline window, 0 to 1, that forms the baseline.
         double baseline_percentile{0.25};
-        /// Number of readings that must exist before AcerFan takes over from Auto.
-        int min_samples{5};
         /// Number of consecutive polls with a curve request before AcerFan takes over from Auto.
         int enter_polls{2};
         /// CPU baseline at or below which control can return to Auto.
@@ -94,7 +92,8 @@ namespace AcerFan
      *          bursty work a laptop CPU flashes to 85-90 C for a second and drops straight back. Fans cannot help with
      *          those flashes, only with heat that stays, and a flash does not move the baseline.
      *
-     *          While both baselines stay cool, the Auto mode of the firmware runs the fans. When either baseline
+     *          While both baselines stay cool, the Auto mode of the firmware runs the fans. A take-over needs one full
+     *          baseline window, so a burst of heat at logon or after reset() does not count. When either baseline
      *          enters its curve, both fans switch to a custom speed and follow the curve that asks for more, never
      *          below the lowest curve point. The speed changes in limited steps and falls only after every recent
      *          request is lower. Control returns to Auto after both baselines stay at or below their exit temperatures
@@ -142,7 +141,7 @@ namespace AcerFan
         std::deque<int> m_gpu_history;
         std::deque<int> m_demand_history;
         FanCommand m_command{};
-        // Readings since construction or reset(), capped at ControllerSettings::min_samples.
+        // Readings since construction or reset(), capped at ControllerSettings::baseline_polls.
         int m_samples{0};
         int m_hot_polls{0};
         int m_cool_polls{0};

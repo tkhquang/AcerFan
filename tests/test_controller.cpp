@@ -114,17 +114,35 @@ namespace
     void test_sustained_heat_takes_over()
     {
         FanController controller{default_settings()};
-        // Four readings are fewer than min_samples.
-        CHECK(feed(controller, {88, 50}, 4).mode == FanMode::FirmwareAuto);
+        // A take-over waits for one full baseline window of 60 readings.
+        CHECK(feed(controller, {88, 50}, 59).mode == FanMode::FirmwareAuto);
         const FanCommand command = step(controller, {88, 50});
         CHECK(command.mode == FanMode::Custom);
         CHECK(command.percent == 90);
     }
 
+    void test_logon_burst_stays_auto()
+    {
+        // The CPU runs hot for the first 30 seconds after logon, then cools down.
+        FanController controller{default_settings()};
+        CHECK(feed(controller, {92, 60}, 15).mode == FanMode::FirmwareAuto);
+        CHECK(feed(controller, {62, 55}, 60).mode == FanMode::FirmwareAuto);
+    }
+
+    void test_short_burst_ignored()
+    {
+        FanController controller{default_settings()};
+        feed(controller, {62, 55}, 60);
+        // One minute of heat fills half of the two-minute window, which leaves the 25th percentile cool.
+        CHECK(feed(controller, {90, 55}, 30).mode == FanMode::FirmwareAuto);
+        // Heat that stays for over 90 seconds moves the baseline into the curve.
+        CHECK(feed(controller, {90, 55}, 20).mode == FanMode::Custom);
+    }
+
     void test_gpu_alone_takes_over()
     {
         FanController controller{default_settings()};
-        const FanCommand command = feed(controller, {60, 80}, 5);
+        const FanCommand command = feed(controller, {60, 80}, 60);
         CHECK(command.mode == FanMode::Custom);
         CHECK(command.percent == 60);
     }
@@ -179,13 +197,13 @@ namespace
 
     void test_reset()
     {
-        FanController controller{instant_settings()};
-        feed(controller, {95, 50}, 5);
-        CHECK(controller.command().mode == FanMode::Custom);
+        FanController controller{default_settings()};
+        CHECK(feed(controller, {95, 50}, 60).mode == FanMode::Custom);
         controller.reset();
         CHECK(controller.command().mode == FanMode::FirmwareAuto);
-        // min_samples counts again from zero.
-        CHECK(feed(controller, {95, 50}, 4).mode == FanMode::FirmwareAuto);
+        // The baseline window fills again from zero.
+        CHECK(feed(controller, {95, 50}, 59).mode == FanMode::FirmwareAuto);
+        CHECK(step(controller, {95, 50}).mode == FanMode::Custom);
     }
 } // namespace
 
@@ -195,6 +213,8 @@ int main()
     test_cool_stays_auto();
     test_spikes_ignored();
     test_sustained_heat_takes_over();
+    test_logon_burst_stays_auto();
+    test_short_burst_ignored();
     test_gpu_alone_takes_over();
     test_rise_is_stepped();
     test_fall_and_hand_back();

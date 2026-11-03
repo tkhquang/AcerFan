@@ -20,7 +20,7 @@ namespace AcerFan
     {
         constexpr std::string_view DEFAULT_CPU_CURVE = "80:40, 84:60, 87:80, 89:100";
         constexpr std::string_view DEFAULT_GPU_CURVE = "75:40, 80:60, 84:80, 86:100";
-        constexpr std::chrono::seconds DEFAULT_BASELINE_WINDOW{60};
+        constexpr std::chrono::seconds DEFAULT_BASELINE_WINDOW{120};
         constexpr std::chrono::seconds DEFAULT_EXIT_HOLD{30};
         constexpr double PERCENT_SCALE = 100.0;
         constexpr std::size_t MAX_VALUE_CHARS = 512;
@@ -50,11 +50,11 @@ gpu = 75:40, 80:60, 84:80, 86:100
 poll_ms = 2000
 ; The curves use the baseline of each chip: the baseline_percent percentile of the last baseline_s seconds.
 ; Under light, bursty work the CPU flashes to 85-90 C for a second and drops back. Fans cannot help with
-; those flashes, only with heat that stays, and a flash does not move the baseline.
-baseline_s = 60
+; those flashes, only with heat that stays, and a burst shorter than about 90 seconds does not move the baseline.
+; AcerFan takes over only after one full baseline_s window, so the heat burst at logon does not count.
+baseline_s = 120
 baseline_percent = 25
-; AcerFan takes over after min_samples readings and enter_polls consecutive polls with a curve request.
-min_samples = 5
+; AcerFan takes over after enter_polls consecutive polls with a curve request.
 enter_polls = 2
 ; AcerFan hands the fans back to Auto when the CPU and GPU baselines stay at or below these for exit_hold_s.
 cpu_exit_c = 74
@@ -75,7 +75,7 @@ failsafe_polls = 5
 
 [log]
 ; Seconds between two status lines in AcerFan.log, 0 for none.
-status_every_s = 10
+status_every_s = 60
 
 [state]
 ; curve, auto or full. The tray menu sets it.
@@ -248,7 +248,6 @@ mode = curve
         control_section.read(L"baseline_percent", {0, 100}, baseline_percent);
         controller.baseline_percentile = baseline_percent / PERCENT_SCALE;
 
-        control_section.read(L"min_samples", {1, 300}, controller.min_samples);
         control_section.read(L"enter_polls", {1, 60}, controller.enter_polls);
         control_section.read(L"cpu_exit_c", {30, 100}, controller.cpu_exit_c);
         control_section.read(L"gpu_exit_c", {30, 100}, controller.gpu_exit_c);

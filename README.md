@@ -20,7 +20,8 @@ The goal is **no thermal throttle, not low temperatures**. On some models the Au
 ## How it works
 
 - Every 2 seconds AcerFan reads the CPU and GPU temperatures from the firmware.
-- The curves act on the **baseline** of each chip: the 25th percentile of the last 60 seconds. Under light, bursty work a laptop CPU flashes to 85-90 °C for a second and drops straight back. Fans cannot help with those flashes, only with heat that stays, and a flash does not move the baseline.
+- The curves act on the **baseline** of each chip: the 25th percentile of the last 2 minutes. Under light, bursty work a laptop CPU flashes to 85-90 °C for a second and drops straight back. Fans cannot help with those flashes, only with heat that stays. A flash or a burst shorter than about 90 seconds does not move the baseline.
+- AcerFan takes over only after one full 2-minute window of readings, so the heat burst at logon does not spin the fans up.
 - Below the curves the Auto mode of the firmware runs the fans. Once a baseline enters its curve, both fans switch to a custom speed and follow the chip that asks for more:
 
   | CPU baseline | < 80 °C | 80 °C | 84 °C | 87 °C | 89 °C+ |
