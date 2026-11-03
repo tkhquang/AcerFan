@@ -4,6 +4,10 @@ AcerFan is a small tray app that runs the fans of an Acer laptop from the CPU an
 
 The goal is **no thermal throttle, not low temperatures**. On some models the Auto mode of the firmware caps the fans far below their maximum. On a ConceptD 9 it stops at about 2,750 rpm while the CPU sits at its 90 °C throttle point, although the fans reach 6,100 rpm. AcerFan leaves the fans to Auto while the chips stay cool and takes over only when heat builds up.
 
+<p align="center">
+  <img src="docs/images/tray-menu.png" alt="The AcerFan tray menu above its tray icon. The icon shows 83 on green: the hotter chip is at 83 °C and AcerFan runs the fans at a custom speed. The menu lists the live temperatures and fan speeds, the three modes, Start with Windows, the settings and log entries, and Exit." width="340">
+</p>
+
 > **Tested on:** Acer ConceptD 9 (CN917-71, i9-9980HK, RTX 2080) only. Other Acer laptops with PredatorSense, NitroSense or ConceptD Palette expose the same `AcerGamingFunction` interface and probably work, but their sensor and fan ids can differ. Reports are welcome.
 
 ## Install
