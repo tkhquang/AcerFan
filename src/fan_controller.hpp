@@ -1,6 +1,6 @@
 /**
  * @file fan_controller.hpp
- * @brief Decides the fan mode and speed from temperature readings. Pure logic: no I/O.
+ * @brief The decision of the fan mode and speed from temperature readings, without I/O.
  */
 #ifndef ACERFAN_FAN_CONTROLLER_HPP
 #define ACERFAN_FAN_CONTROLLER_HPP
@@ -11,93 +11,139 @@
 
 namespace AcerFan
 {
-    /// Who runs the fans: the firmware's own Auto curve, or a fixed percentage set by AcerFan.
+    /**
+     * @brief The owner of the fan speed.
+     */
     enum class FanMode
     {
-        firmware_auto,
-        custom,
+        /// The Auto curve of the firmware runs the fans.
+        FirmwareAuto,
+        /// AcerFan holds the fans at FanCommand::percent.
+        Custom,
     };
 
-    /// What the fans should be set to. `percent` only matters in FanMode::custom.
+    /**
+     * @brief The setting of both fans.
+     */
     struct FanCommand
     {
-        FanMode mode{FanMode::firmware_auto};
+        /// Names the owner of the fan speed.
+        FanMode mode{FanMode::FirmwareAuto};
+        /// Holds the fan speed in percent. Only FanMode::Custom uses it.
         int percent{0};
 
+        /// Equal when both fields are equal.
         friend bool operator==(const FanCommand &, const FanCommand &) = default;
     };
 
-    /// One reading of both chips, in degrees Celsius.
+    /**
+     * @brief One reading of both chips.
+     */
     struct Temperatures
     {
-        int cpu_c{};
-        int gpu_c{};
+        /// CPU temperature in degrees Celsius.
+        int cpu_c{0};
+        /// GPU temperature in degrees Celsius.
+        int gpu_c{0};
     };
 
-    /// Tuning of FanController. Counts are in polls, one poll per on_reading() / on_read_failure() call.
+    /**
+     * @brief The tuning of FanController.
+     * @details A count of polls counts calls of FanController::on_reading() and FanController::on_read_failure().
+     */
     struct ControllerSettings
     {
+        /// Maps the CPU baseline temperature to a fan percent.
         FanCurve cpu_curve;
+        /// Maps the GPU baseline temperature to a fan percent.
         FanCurve gpu_curve;
-        int baseline_polls{30};          ///< Readings the baseline temperature is taken from.
-        double baseline_percentile{0.25}; ///< Baseline = this percentile of those readings.
-        int min_samples{5};              ///< Readings needed before taking over from Auto.
-        int enter_polls{2};              ///< Polls in a row with a curve request before taking over from Auto.
-        int cpu_exit_c{74};              ///< CPU baseline at or below which control may return to Auto ...
-        int gpu_exit_c{70};              ///< ... together with the GPU baseline at or below this ...
-        int exit_hold_polls{15};         ///< ... for this many polls in a row.
-        int up_step_percent{10};         ///< Largest increase per poll.
-        int down_step_percent{5};        ///< Largest decrease per poll.
-        int down_hold_polls{3};          ///< Every request of this many recent polls must be lower before slowing.
-        int min_change_percent{3};       ///< Smaller changes are skipped, except reaching the floor or the ceiling.
-        int failsafe_percent{100};       ///< Speed used when temperatures cannot be read ...
-        int failsafe_polls{5};           ///< ... for this many polls in a row.
+        /// Number of recent readings in the baseline window.
+        int baseline_polls{30};
+        /// Percentile of the baseline window, 0 to 1, that forms the baseline.
+        double baseline_percentile{0.25};
+        /// Number of readings that must exist before AcerFan takes over from Auto.
+        int min_samples{5};
+        /// Number of consecutive polls with a curve request before AcerFan takes over from Auto.
+        int enter_polls{2};
+        /// CPU baseline at or below which control can return to Auto.
+        int cpu_exit_c{74};
+        /// GPU baseline at or below which control can return to Auto.
+        int gpu_exit_c{70};
+        /// Number of consecutive polls with both baselines at or below their exit temperatures before control returns.
+        int exit_hold_polls{15};
+        /// Largest speed increase per poll, in percent.
+        int up_step_percent{10};
+        /// Largest speed decrease per poll, in percent.
+        int down_step_percent{5};
+        /// Number of recent requests that must all be lower before the speed falls.
+        int down_hold_polls{3};
+        /// Smallest speed change in percent. A step to the floor or the ceiling is exempt.
+        int min_change_percent{3};
+        /// Fan speed in percent while the temperatures stay unreadable.
+        int failsafe_percent{100};
+        /// Number of consecutive failed reads before the fail-safe speed applies.
+        int failsafe_polls{5};
+
+        /// Equal when every field is equal.
+        friend bool operator==(const ControllerSettings &, const ControllerSettings &) = default;
     };
 
     /**
      * @brief Temperature-driven fan control with hysteresis.
-     * @details The curves act on each chip's baseline temperature, a low percentile of its recent readings. Under
-     *          light, bursty work a laptop CPU flashes to 85-90 C for a second and drops straight back; fans cannot
-     *          help with those flashes, only with heat that stays, and a flash does not move the baseline.
+     * @details The curves act on the baseline of each chip, a low percentile of its recent readings. Under light,
+     *          bursty work a laptop CPU flashes to 85-90 C for a second and drops straight back. Fans cannot help with
+     *          those flashes, only with heat that stays, and a flash does not move the baseline.
      *
-     *          While both baselines are cool the firmware's Auto mode runs the fans. When either baseline enters
-     *          its curve, the fans switch to custom speed and follow whichever curve asks for more, never below
-     *          the lowest curve point. Speed changes in limited steps; it only falls once every recent request is
-     *          lower. Control returns to Auto after both baselines stay at or below their exit temperatures for
-     *          exit_hold_polls.
+     *          While both baselines stay cool, the Auto mode of the firmware runs the fans. When either baseline
+     *          enters its curve, both fans switch to a custom speed and follow the curve that asks for more, never
+     *          below the lowest curve point. The speed changes in limited steps and falls only after every recent
+     *          request is lower. Control returns to Auto after both baselines stay at or below their exit temperatures
+     *          for ControllerSettings::exit_hold_polls polls.
      */
     class FanController
     {
     public:
+        /** @brief Starts in FanMode::FirmwareAuto with empty histories. */
         explicit FanController(ControllerSettings settings);
 
-        /// Feeds one reading and returns the command for the fans after this poll.
-        FanCommand on_reading(Temperatures temps);
+        /** @brief Adds one reading and updates command(). */
+        void on_reading(Temperatures temperatures);
 
-        /// Feeds one failed read. After failsafe_polls failures in a row the fans go to failsafe_percent.
-        FanCommand on_read_failure();
+        /**
+         * @brief Counts one failed read and updates command().
+         * @details After ControllerSettings::failsafe_polls consecutive failures the fans go to
+         *          ControllerSettings::failsafe_percent. The next reading ends the fail-safe.
+         */
+        void on_read_failure() noexcept;
 
-        /// Back to firmware Auto with empty histories.
-        void reset();
+        /** @brief Returns to FanMode::FirmwareAuto and clears every history. */
+        void reset() noexcept;
 
+        /// Returns the fan setting after the latest poll.
         [[nodiscard]] FanCommand command() const noexcept { return m_command; }
+
+        /// Returns true while the fail-safe speed applies.
         [[nodiscard]] bool in_failsafe() const noexcept { return m_failsafe; }
-        [[nodiscard]] int cpu_baseline() const { return baseline(m_cpu); }
-        [[nodiscard]] int gpu_baseline() const { return baseline(m_gpu); }
-        [[nodiscard]] const ControllerSettings &settings() const noexcept { return m_settings; }
+
+        /** @brief Returns the CPU baseline temperature in degrees Celsius, 0 before the first reading. */
+        [[nodiscard]] int cpu_baseline() const { return baseline(m_cpu_history); }
+
+        /** @brief Returns the GPU baseline temperature in degrees Celsius, 0 before the first reading. */
+        [[nodiscard]] int gpu_baseline() const { return baseline(m_gpu_history); }
 
     private:
-        [[nodiscard]] int baseline(const std::deque<int> &values) const;
-        void update_custom(int demand);
+        [[nodiscard]] int baseline(const std::deque<int> &history) const;
+        void update_custom(int demand) noexcept;
 
         ControllerSettings m_settings;
-        int m_floor_percent;
-        int m_ceiling_percent;
-        std::deque<int> m_cpu;
-        std::deque<int> m_gpu;
-        std::deque<int> m_demand;
-        FanCommand m_command;
-        int m_samples{0}; ///< Readings since construction or reset(); the windows above are capped, this is not.
+        int m_floor_percent{0};
+        int m_ceiling_percent{0};
+        std::deque<int> m_cpu_history;
+        std::deque<int> m_gpu_history;
+        std::deque<int> m_demand_history;
+        FanCommand m_command{};
+        // Readings since construction or reset(), capped at ControllerSettings::min_samples.
+        int m_samples{0};
         int m_hot_polls{0};
         int m_cool_polls{0};
         int m_failed_polls{0};

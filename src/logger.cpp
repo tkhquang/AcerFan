@@ -4,11 +4,12 @@
 
 #include <format>
 #include <fstream>
+#include <system_error>
 #include <utility>
 
 namespace AcerFan
 {
-    Logger::Logger(std::filesystem::path file, std::uintmax_t max_bytes)
+    Logger::Logger(std::filesystem::path file, std::uintmax_t max_bytes) noexcept
         : m_file(std::move(file)), m_max_bytes(max_bytes)
     {
     }
@@ -43,7 +44,7 @@ namespace AcerFan
         }
         catch (...)
         {
-            // Logging must never take the fan control down.
+            // A log failure must never stop the fan control.
         }
     }
 } // namespace AcerFan

@@ -1,14 +1,15 @@
 /**
  * @file acer_wmi.hpp
- * @brief Fan and sensor access through the firmware's AcerGamingFunction WMI class (root\WMI).
- * @details The same interface Acer's PredatorSense, NitroSense and ConceptD Palette use. Every method takes a 32-bit
- *          `gmInput` and returns a 64-bit `gmOutput` whose low byte is a status (0 = success). The encodings below
- *          match the ones documented by the Linux acer-wmi driver and were verified on a ConceptD 9 (CN917-71).
- *          The methods are only callable from an elevated process.
+ * @brief Fan and sensor access through the AcerGamingFunction WMI class of the firmware, in root\WMI.
+ * @details Acer's PredatorSense, NitroSense and ConceptD Palette use the same interface. Every method takes a 32-bit
+ *          `gmInput` and returns a 64-bit `gmOutput` whose low byte is a status, 0 for success. The encodings below
+ *          match the ones that the Linux acer-wmi driver documents. A ConceptD 9 (CN917-71) verified them. Only an
+ *          elevated process can call the methods.
  */
 #ifndef ACERFAN_ACER_WMI_HPP
 #define ACERFAN_ACER_WMI_HPP
 
+#include "error.hpp"
 #include "fan_controller.hpp"
 
 #include <windows.h>
@@ -16,46 +17,63 @@
 #include <wrl/client.h>
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <string>
 #include <string_view>
 
 namespace AcerFan
 {
-    /// GetGamingSysInfo selectors: command 1 (read sensor) in bits 7:0, sensor id in bits 15:8.
+    /**
+     * @brief The GetGamingSysInfo selectors: command 1 (read a sensor) in bits 7:0 and the sensor id in bits 15:8.
+     */
     enum class Sensor : std::uint32_t
     {
-        cpu_temp = 0x0101,
-        cpu_fan_rpm = 0x0201,
-        gpu_fan_rpm = 0x0601,
-        gpu_temp = 0x0A01,
+        /// CPU temperature in degrees Celsius.
+        CpuTemp = 0x0101,
+        /// CPU fan speed in rpm.
+        CpuFanRpm = 0x0201,
+        /// GPU fan speed in rpm.
+        GpuFanRpm = 0x0601,
+        /// GPU temperature in degrees Celsius.
+        GpuTemp = 0x0A01,
     };
 
+    /**
+     * @brief A connection to the AcerGamingFunction instance of the firmware.
+     * @details Use one connection from one thread. It caches the method signatures.
+     */
     class AcerWmi
     {
     public:
         /**
          * @brief Connects to root\WMI and finds the AcerGamingFunction instance.
-         * @throws ComError when the class is missing (not an Acer laptop with this firmware interface) or access is
-         *         denied (process not elevated).
+         * @return The connection, or an Error when the class is missing (no Acer laptop with this firmware interface)
+         *         or the process is not elevated.
          */
-        AcerWmi();
+        [[nodiscard]] static Result<AcerWmi> connect();
 
-        /// Reads a temperature (degrees Celsius) or fan speed (rpm).
-        [[nodiscard]] int read(Sensor sensor);
+        /** @brief Reads a temperature in degrees Celsius or a fan speed in rpm. */
+        [[nodiscard]] Result<int> read(Sensor sensor);
 
-        /// Puts both fans into `mode` (firmware Auto or custom speed).
-        void set_mode(FanMode mode);
+        /** @brief Reads the CPU and GPU temperatures. */
+        [[nodiscard]] Result<Temperatures> read_temperatures();
 
-        /// Sets the custom speed of both fans, 0..100. Takes effect in FanMode::custom.
-        void set_percent(int percent);
+        /** @brief Puts both fans into `command.mode`, at `command.percent` for FanMode::Custom. */
+        [[nodiscard]] Result<void> apply(FanCommand command);
 
-        /// True when both fans are currently in `mode`.
-        [[nodiscard]] bool is_mode(FanMode mode);
+        /** @brief Sets the custom speed of both fans in percent, clamped to 0..100. Only FanMode::Custom uses it. */
+        [[nodiscard]] Result<void> set_percent(int percent);
+
+        /** @brief Returns true when both fans are in `mode`. */
+        [[nodiscard]] Result<bool> is_mode(FanMode mode);
 
     private:
-        [[nodiscard]] std::uint64_t call(const std::wstring &method, std::uint32_t input);
-        [[nodiscard]] IWbemClassObject *in_signature(const std::wstring &method);
+        AcerWmi() = default;
+
+        [[nodiscard]] Result<std::uint64_t> call(std::wstring_view method, std::uint32_t input);
+        [[nodiscard]] Result<IWbemClassObject *> in_signature(std::wstring_view method);
+        [[nodiscard]] Result<void> set_mode(FanMode mode);
 
         Microsoft::WRL::ComPtr<IWbemServices> m_services;
         Microsoft::WRL::ComPtr<IWbemClassObject> m_class;

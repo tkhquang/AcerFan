@@ -1,0 +1,3 @@
+# Every text file checks out CRLF in the working tree whatever the core.autocrlf setting of the machine. The stored
+# blobs are LF, so this declaration rewrites nothing.
+* text=auto eol=crlf

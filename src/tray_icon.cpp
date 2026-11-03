@@ -1,6 +1,7 @@
 #include "tray_icon.hpp"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <cwchar>
 #include <vector>
@@ -9,14 +10,27 @@ namespace AcerFan
 {
     namespace
     {
-        constexpr UINT icon_id = 1;
+        constexpr UINT ICON_ID = 1;
+        constexpr WORD BITS_PER_PIXEL = 32;
+        constexpr int FONT_HEIGHT_NUMERATOR = 13;
+        constexpr int FONT_HEIGHT_DENOMINATOR = 16;
+        constexpr int CORNER_RADIUS_DIVISOR = 8;
+        constexpr std::uint32_t CHANNEL_MASK = 0xFF;
+        constexpr int FULL_COVERAGE = 255;
+        constexpr std::uint32_t OPAQUE_ALPHA = 0xFF000000u;
+        constexpr int RED_SHIFT = 16;
+        constexpr int GREEN_SHIFT = 8;
+        // A monochrome bitmap row is padded to a whole number of 16-bit words.
+        constexpr int MASK_ROW_ALIGN_BITS = 16;
+        constexpr int BYTES_PER_WORD = 2;
 
         std::uint8_t blend(std::uint8_t from, std::uint8_t to, std::uint32_t coverage) noexcept
         {
-            return static_cast<std::uint8_t>(from + (static_cast<int>(to) - from) * static_cast<int>(coverage) / 255);
+            const int delta = static_cast<int>(to) - static_cast<int>(from);
+            return static_cast<std::uint8_t>(from + delta * static_cast<int>(coverage) / FULL_COVERAGE);
         }
 
-        /// True when (x, y) lies outside a square with corners rounded by `radius`.
+        // True when (x, y) lies outside a square of `size` whose corners have the radius `radius`.
         bool outside_rounded(int x, int y, int size, int radius) noexcept
         {
             const int cx = x < radius ? radius : (x >= size - radius ? size - radius - 1 : x);
@@ -27,59 +41,55 @@ namespace AcerFan
         }
     } // namespace
 
-    UniqueIcon render_badge_icon(std::wstring_view text, COLORREF background, COLORREF foreground)
+    UniqueIcon render_badge_icon(std::wstring_view text, BadgeColors colors)
     {
         const int size = GetSystemMetricsForDpi(SM_CXSMICON, GetDpiForSystem());
 
         BITMAPINFO info{};
         info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
         info.bmiHeader.biWidth = size;
-        info.bmiHeader.biHeight = -size; // top-down
+        // A negative height makes a top-down bitmap.
+        info.bmiHeader.biHeight = -size;
         info.bmiHeader.biPlanes = 1;
-        info.bmiHeader.biBitCount = 32;
+        info.bmiHeader.biBitCount = BITS_PER_PIXEL;
         info.bmiHeader.biCompression = BI_RGB;
 
         HDC screen = GetDC(nullptr);
-        HDC dc = CreateCompatibleDC(screen);
+        const UniqueDc dc{CreateCompatibleDC(screen)};
         ReleaseDC(nullptr, screen);
-        void *bits = nullptr;
-        HBITMAP color = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
-        if (dc == nullptr || color == nullptr || bits == nullptr)
+        if (!dc)
         {
-            if (color != nullptr)
-            {
-                DeleteObject(color);
-            }
-            if (dc != nullptr)
-            {
-                DeleteDC(dc);
-            }
-            return UniqueIcon{};
+            return {};
         }
-        HGDIOBJ old_bitmap = SelectObject(dc, color);
+        void *bits = nullptr;
+        const UniqueBitmap color{CreateDIBSection(dc.get(), &info, DIB_RGB_COLORS, &bits, nullptr, 0)};
+        if (!color || bits == nullptr)
+        {
+            return {};
+        }
 
-        // GDI text ignores alpha, so draw white-on-black to get the glyph coverage, then compose by hand.
-        RECT rect{0, 0, size, size};
-        FillRect(dc, &rect, static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
+        // GDI text ignores alpha. Draw white on black to get the glyph coverage, then compose the pixels by hand.
         LOGFONTW font_desc{};
-        font_desc.lfHeight = -(size * 13 / 16);
+        font_desc.lfHeight = -(size * FONT_HEIGHT_NUMERATOR / FONT_HEIGHT_DENOMINATOR);
         font_desc.lfWeight = FW_BOLD;
         font_desc.lfQuality = ANTIALIASED_QUALITY;
         wcscpy_s(font_desc.lfFaceName, L"Segoe UI");
-        HFONT font = CreateFontIndirectW(&font_desc);
-        HGDIOBJ old_font = SelectObject(dc, font);
-        SetTextColor(dc, RGB(255, 255, 255));
-        SetBkMode(dc, TRANSPARENT);
-        DrawTextW(
-            dc,
-            text.data(),
-            static_cast<int>(text.size()),
-            &rect,
-            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX
-        );
-        GdiFlush();
+        const UniqueFont font{CreateFontIndirectW(&font_desc)};
 
-        const int radius = std::max(1, size / 8);
+        const HGDIOBJ old_bitmap = SelectObject(dc.get(), color.get());
+        const HGDIOBJ old_font = SelectObject(dc.get(), font.get());
+        RECT rect{0, 0, size, size};
+        FillRect(dc.get(), &rect, static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
+        SetTextColor(dc.get(), RGB(255, 255, 255));
+        SetBkMode(dc.get(), TRANSPARENT);
+        const UINT draw_flags = DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX;
+        DrawTextW(dc.get(), text.data(), static_cast<int>(text.size()), &rect, draw_flags);
+        GdiFlush();
+        // GDI deletes no object that a device context still selects.
+        SelectObject(dc.get(), old_font);
+        SelectObject(dc.get(), old_bitmap);
+
+        const int radius = std::max(1, size / CORNER_RADIUS_DIVISOR);
         auto *pixels = static_cast<std::uint32_t *>(bits);
         for (int y = 0; y < size; ++y)
         {
@@ -88,45 +98,39 @@ namespace AcerFan
                 std::uint32_t &pixel = pixels[y * size + x];
                 if (outside_rounded(x, y, size, radius))
                 {
-                    pixel = 0; // fully transparent corner
+                    // A fully transparent corner.
+                    pixel = 0;
                     continue;
                 }
-                const std::uint32_t coverage = pixel & 0xFF;
-                const std::uint8_t r = blend(GetRValue(background), GetRValue(foreground), coverage);
-                const std::uint8_t g = blend(GetGValue(background), GetGValue(foreground), coverage);
-                const std::uint8_t b = blend(GetBValue(background), GetBValue(foreground), coverage);
-                pixel = 0xFF000000u | (static_cast<std::uint32_t>(r) << 16) | (static_cast<std::uint32_t>(g) << 8) | b;
+                const std::uint32_t coverage = pixel & CHANNEL_MASK;
+                const std::uint8_t r = blend(GetRValue(colors.background), GetRValue(colors.foreground), coverage);
+                const std::uint8_t g = blend(GetGValue(colors.background), GetGValue(colors.foreground), coverage);
+                const std::uint8_t b = blend(GetBValue(colors.background), GetBValue(colors.foreground), coverage);
+                pixel = OPAQUE_ALPHA | (static_cast<std::uint32_t>(r) << RED_SHIFT) |
+                        (static_cast<std::uint32_t>(g) << GREEN_SHIFT) | b;
             }
         }
 
-        SelectObject(dc, old_font);
-        DeleteObject(font);
-        SelectObject(dc, old_bitmap);
-
-        // The colour bitmap carries alpha, so the mask is unused; it only has to exist and be all zero.
-        const std::vector<std::uint8_t> zeros(static_cast<std::size_t>(((size + 15) / 16) * 2 * size), 0);
-        HBITMAP mask = CreateBitmap(size, size, 1, 1, zeros.data());
+        // The color bitmap carries alpha, so Windows ignores the mask. The mask only has to exist and be all zero.
+        const int row_bytes = (size + MASK_ROW_ALIGN_BITS - 1) / MASK_ROW_ALIGN_BITS * BYTES_PER_WORD;
+        const std::vector<std::uint8_t> zeros(static_cast<std::size_t>(row_bytes) * static_cast<std::size_t>(size), 0);
+        const UniqueBitmap mask{CreateBitmap(size, size, 1, 1, zeros.data())};
         ICONINFO icon_info{};
         icon_info.fIcon = TRUE;
-        icon_info.hbmMask = mask;
-        icon_info.hbmColor = color;
-        UniqueIcon icon{CreateIconIndirect(&icon_info)};
-
-        DeleteObject(mask);
-        DeleteObject(color);
-        DeleteDC(dc);
-        return icon;
+        icon_info.hbmMask = mask.get();
+        icon_info.hbmColor = color.get();
+        return UniqueIcon{CreateIconIndirect(&icon_info)};
     }
 
-    TrayIcon::TrayIcon(HWND owner, UINT callback_message)
+    TrayIcon::TrayIcon(HWND owner, UINT callback_message) noexcept
     {
         m_data.cbSize = sizeof(m_data);
         m_data.hWnd = owner;
-        m_data.uID = icon_id;
+        m_data.uID = ICON_ID;
         m_data.uCallbackMessage = callback_message;
     }
 
-    TrayIcon::~TrayIcon()
+    TrayIcon::~TrayIcon() noexcept
     {
         if (m_added)
         {
@@ -134,7 +138,7 @@ namespace AcerFan
         }
     }
 
-    void TrayIcon::add()
+    void TrayIcon::add() noexcept
     {
         m_data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP;
         m_added = Shell_NotifyIconW(NIM_ADD, &m_data) != FALSE;
@@ -145,7 +149,7 @@ namespace AcerFan
         }
     }
 
-    void TrayIcon::update(HICON icon, std::wstring_view tooltip)
+    void TrayIcon::update(HICON icon, std::wstring_view tooltip) noexcept
     {
         m_data.hIcon = icon;
         const std::size_t length = std::min(tooltip.size(), std::size(m_data.szTip) - 1);
@@ -159,11 +163,12 @@ namespace AcerFan
         m_data.uFlags = NIF_ICON | NIF_TIP | NIF_SHOWTIP;
         if (Shell_NotifyIconW(NIM_MODIFY, &m_data) == FALSE)
         {
-            m_added = false; // Explorer lost the icon; add it on the next update.
+            // Explorer lost the icon. The next update adds it again.
+            m_added = false;
         }
     }
 
-    void TrayIcon::recreate()
+    void TrayIcon::recreate() noexcept
     {
         m_added = false;
         add();

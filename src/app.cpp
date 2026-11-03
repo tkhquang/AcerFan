@@ -7,48 +7,67 @@
 #include <windowsx.h>
 
 #include <algorithm>
+#include <array>
 #include <format>
 #include <utility>
-#include <vector>
 
 namespace AcerFan
 {
     namespace
     {
-        constexpr wchar_t window_class[] = L"AcerFanTrayWindow";
-        constexpr UINT msg_tray = WM_APP + 1;
-        constexpr UINT msg_status = WM_APP + 2;
+        constexpr const wchar_t *WINDOW_CLASS = L"AcerFanTrayWindow";
+        constexpr UINT TRAY_MESSAGE = WM_APP + 1;
+        constexpr UINT STATUS_MESSAGE = WM_APP + 2;
 
-        enum MenuId : UINT
+        constexpr UINT MENU_MODE_CURVE = 100;
+        constexpr UINT MENU_MODE_AUTO = 101;
+        constexpr UINT MENU_MODE_FULL = 102;
+        constexpr UINT MENU_AUTOSTART = 103;
+        constexpr UINT MENU_EDIT_SETTINGS = 104;
+        constexpr UINT MENU_RELOAD_SETTINGS = 105;
+        constexpr UINT MENU_OPEN_LOG = 106;
+        constexpr UINT MENU_EXIT = 107;
+
+        constexpr COLORREF BADGE_IDLE = RGB(64, 64, 64);
+        constexpr COLORREF BADGE_LOW = RGB(46, 125, 50);
+        constexpr COLORREF BADGE_MID = RGB(239, 108, 0);
+        constexpr COLORREF BADGE_HIGH = RGB(198, 40, 40);
+        constexpr COLORREF BADGE_TEXT = RGB(255, 255, 255);
+        constexpr int MID_PERCENT = 60;
+        constexpr int HIGH_PERCENT = 85;
+        constexpr int MAX_BADGE_C = 99;
+
+        /**
+         * @brief A mode entry of the tray menu.
+         */
+        struct ModeItem
         {
-            id_mode_curve = 100,
-            id_mode_auto,
-            id_mode_full,
-            id_autostart,
-            id_edit_settings,
-            id_reload_settings,
-            id_open_log,
-            id_exit,
+            UINT id{0};
+            UserMode mode{UserMode::Curve};
         };
 
-        constexpr COLORREF colour_idle = RGB(64, 64, 64);
-        constexpr COLORREF colour_low = RGB(46, 125, 50);
-        constexpr COLORREF colour_mid = RGB(239, 108, 0);
-        constexpr COLORREF colour_high = RGB(198, 40, 40);
-        constexpr COLORREF colour_text = RGB(255, 255, 255);
-        constexpr int mid_percent = 60;
-        constexpr int high_percent = 85;
-        constexpr int max_display_c = 99;
+        // The radio group of the menu. CheckMenuRadioItem needs consecutive ids in this order.
+        constexpr std::array MODE_ITEMS{
+            ModeItem{MENU_MODE_CURVE, UserMode::Curve},
+            ModeItem{MENU_MODE_AUTO, UserMode::FirmwareAuto},
+            ModeItem{MENU_MODE_FULL, UserMode::FullSpeed},
+        };
+
+        UINT menu_id(UserMode mode) noexcept
+        {
+            const auto found = std::ranges::find(MODE_ITEMS, mode, &ModeItem::mode);
+            return found == MODE_ITEMS.end() ? MENU_MODE_CURVE : found->id;
+        }
 
         std::wstring mode_label(UserMode mode)
         {
             switch (mode)
             {
-            case UserMode::firmware_auto:
+            case UserMode::FirmwareAuto:
                 return L"Firmware Auto";
-            case UserMode::full_speed:
+            case UserMode::FullSpeed:
                 return L"Full speed";
-            case UserMode::curve:
+            case UserMode::Curve:
                 break;
             }
             return L"Temperature curve";
@@ -56,12 +75,12 @@ namespace AcerFan
 
         std::wstring fan_text(const FanStatus &status)
         {
-            const std::wstring speed = status.command.mode == FanMode::custom
+            const std::wstring speed = status.command.mode == FanMode::Custom
                                            ? std::format(L"{}%", status.command.percent)
                                            : std::wstring{L"firmware Auto"};
             if (status.cpu_rpm && status.gpu_rpm)
             {
-                return std::format(L"Fans {} · {} / {} rpm", speed, *status.cpu_rpm, *status.gpu_rpm);
+                return std::format(L"Fans {} \u00B7 {} / {} rpm", speed, *status.cpu_rpm, *status.gpu_rpm);
             }
             return std::format(L"Fans {}", speed);
         }
@@ -73,71 +92,82 @@ namespace AcerFan
                 return L"Temperatures unavailable";
             }
             return std::format(
-                L"CPU {} °C (baseline {}) · GPU {} °C (baseline {})",
+                L"CPU {} \u00B0C (baseline {}) \u00B7 GPU {} \u00B0C (baseline {})",
                 *status.cpu_c,
-                status.cpu_base,
+                status.cpu_baseline_c,
                 *status.gpu_c,
-                status.gpu_base
+                status.gpu_baseline_c
             );
         }
 
-        void open_file(const std::filesystem::path &file)
+        COLORREF badge_color(const FanStatus &status) noexcept
+        {
+            if (status.command.mode != FanMode::Custom)
+            {
+                return BADGE_IDLE;
+            }
+            const int percent = status.command.percent;
+            if (percent >= HIGH_PERCENT)
+            {
+                return BADGE_HIGH;
+            }
+            return percent >= MID_PERCENT ? BADGE_MID : BADGE_LOW;
+        }
+
+        void open_file(const std::filesystem::path &file) noexcept
         {
             ShellExecuteW(nullptr, L"open", file.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
         }
     } // namespace
 
     App::App(HINSTANCE instance, std::filesystem::path exe)
-        : m_instance(instance),
-          m_exe(std::move(exe)),
-          m_ini(m_exe.parent_path() / L"AcerFan.ini"),
+        : m_instance(instance), m_exe(std::move(exe)), m_ini(m_exe.parent_path() / L"AcerFan.ini"),
           m_log(m_exe.parent_path() / L"AcerFan.log")
     {
-        std::vector<std::string> warnings;
-        m_config = load_config(m_ini, warnings);
-        for (const std::string &warning : warnings)
-        {
-            m_log.write("settings: " + warning);
-        }
+        LoadedConfig loaded = load_config(m_ini);
+        log_warnings(loaded.warnings);
+        m_config = std::move(loaded.config);
     }
 
-    App::~App()
+    App::~App() noexcept
     {
         shutdown();
     }
 
     int App::run()
     {
-        WNDCLASSEXW wc{};
-        wc.cbSize = sizeof(wc);
-        wc.lpfnWndProc = &App::window_proc;
-        wc.hInstance = m_instance;
-        wc.lpszClassName = window_class;
-        RegisterClassExW(&wc);
+        WNDCLASSEXW window_class{};
+        window_class.cbSize = sizeof(window_class);
+        window_class.lpfnWndProc = &App::window_proc;
+        window_class.hInstance = m_instance;
+        window_class.lpszClassName = WINDOW_CLASS;
+        RegisterClassExW(&window_class);
 
-        // A hidden top-level window rather than a message-only one: those miss TaskbarCreated and power broadcasts.
-        m_window = CreateWindowExW(0, window_class, L"AcerFan", WS_OVERLAPPED, 0, 0, 0, 0, nullptr, nullptr,
-                                   m_instance, this);
+        // A hidden top-level window, because a message-only window misses TaskbarCreated and the power broadcasts.
+        m_window =
+            CreateWindowExW(0, WINDOW_CLASS, L"AcerFan", WS_OVERLAPPED, 0, 0, 0, 0, nullptr, nullptr, m_instance, this);
         if (m_window == nullptr)
         {
             m_log.write("could not create the tray window");
             return 1;
         }
         m_taskbar_created = RegisterWindowMessageW(L"TaskbarCreated");
-        m_tray = std::make_unique<TrayIcon>(m_window, msg_tray);
+        m_tray = std::make_unique<TrayIcon>(m_window, TRAY_MESSAGE);
         refresh_tray();
 
-        m_service = std::make_unique<FanService>(m_log, m_config, [window = m_window] {
-            PostMessageW(window, msg_status, 0, 0);
-        });
+        m_service = std::make_unique<FanService>(
+            m_log,
+            m_config,
+            [window = m_window]() noexcept { PostMessageW(window, STATUS_MESSAGE, 0, 0); }
+        );
 
-        MSG msg{};
-        while (GetMessageW(&msg, nullptr, 0, 0) > 0)
+        MSG message{};
+        while (GetMessageW(&message, nullptr, 0, 0) > 0)
         {
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
         }
-        return static_cast<int>(msg.wParam);
+        return static_cast<int>(message.wParam);
     }
 
     LRESULT CALLBACK App::window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam)
@@ -169,7 +199,7 @@ namespace AcerFan
 
         switch (message)
         {
-        case msg_tray:
+        case TRAY_MESSAGE:
             switch (LOWORD(lparam))
             {
             case WM_CONTEXTMENU:
@@ -182,7 +212,7 @@ namespace AcerFan
             }
             return 0;
 
-        case msg_status:
+        case STATUS_MESSAGE:
             refresh_tray();
             return 0;
 
@@ -200,7 +230,8 @@ namespace AcerFan
         case WM_ENDSESSION:
             if (wparam != FALSE)
             {
-                shutdown(); // Windows ends the process after this returns; hand the fans back first.
+                // Windows ends the process after this message returns, so the fans go back to Auto first.
+                shutdown();
             }
             return 0;
 
@@ -222,22 +253,15 @@ namespace AcerFan
             return;
         }
         const FanStatus status = m_service ? m_service->status() : FanStatus{};
+        const bool has_reading = status.connected && status.cpu_c && status.gpu_c;
 
-        std::wstring text = L"--";
-        COLORREF colour = colour_idle;
-        if (status.connected && status.cpu_c && status.gpu_c)
+        const std::wstring text =
+            has_reading ? std::to_wstring(std::clamp(std::max(*status.cpu_c, *status.gpu_c), 0, MAX_BADGE_C)) : L"?";
+        const COLORREF color = has_reading ? badge_color(status) : BADGE_IDLE;
+        const std::wstring key = std::format(L"{}|{}", text, static_cast<unsigned long>(color));
+        if (key != m_icon_key || !m_icon)
         {
-            text = std::to_wstring(std::clamp(std::max(*status.cpu_c, *status.gpu_c), 0, max_display_c));
-            if (status.command.mode == FanMode::custom)
-            {
-                const int percent = status.command.percent;
-                colour = percent >= high_percent ? colour_high : (percent >= mid_percent ? colour_mid : colour_low);
-            }
-        }
-        const std::wstring key = std::format(L"{}|{}", text, static_cast<unsigned long>(colour));
-        if (key != m_icon_key || m_icon.get() == nullptr)
-        {
-            m_icon = render_badge_icon(text, colour, colour_text);
+            m_icon = render_badge_icon(text, {color, BADGE_TEXT});
             m_icon_key = key;
         }
 
@@ -248,13 +272,12 @@ namespace AcerFan
         }
         else
         {
-            tooltip = std::format(
-                L"AcerFan · {}\n{}\n{}",
-                mode_label(status.mode),
-                status.cpu_c && status.gpu_c ? std::format(L"CPU {} °C · GPU {} °C", *status.cpu_c, *status.gpu_c)
-                                             : std::wstring{L"Temperatures unavailable"},
-                fan_text(status)
-            );
+            const std::wstring temperatures =
+                status.cpu_c && status.gpu_c
+                    ? std::format(L"CPU {} \u00B0C \u00B7 GPU {} \u00B0C", *status.cpu_c, *status.gpu_c)
+                    : std::wstring{L"Temperatures unavailable"};
+            tooltip =
+                std::format(L"AcerFan \u00B7 {}\n{}\n{}", mode_label(status.mode), temperatures, fan_text(status));
             if (status.failsafe)
             {
                 tooltip += L"\nFail-safe: temperatures unreadable";
@@ -265,91 +288,72 @@ namespace AcerFan
 
     void App::show_menu(POINT at)
     {
-        const FanStatus status = m_service ? m_service->status() : FanStatus{};
-        HMENU menu = CreatePopupMenu();
-        const auto add_info = [menu](const std::wstring &text) {
-            AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, text.c_str());
-        };
+        const UniqueMenu menu{CreatePopupMenu()};
+        if (!menu)
+        {
+            return;
+        }
+        HMENU handle = menu.get();
+        const auto add_info = [handle](const std::wstring &text) noexcept
+        { AppendMenuW(handle, MF_STRING | MF_GRAYED, 0, text.c_str()); };
 
+        const FanStatus status = m_service ? m_service->status() : FanStatus{};
         if (!status.connected)
         {
-            add_info(status.error.empty() ? L"Connecting to the firmware..." : L"Not connected: " + to_wide(status.error));
+            add_info(
+                status.error.empty() ? L"Connecting to the firmware..." : L"Not connected: " + to_wide(status.error)
+            );
         }
         else
         {
             add_info(temperature_text(status));
-            add_info(fan_text(status) + (status.failsafe ? L" · fail-safe" : L""));
+            add_info(fan_text(status) + (status.failsafe ? L" \u00B7 fail-safe" : L""));
         }
-        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(handle, MF_SEPARATOR, 0, nullptr);
 
-        const struct
+        for (const ModeItem &item : MODE_ITEMS)
         {
-            UINT id;
-            UserMode mode;
-        } modes[] = {
-            {id_mode_curve, UserMode::curve},
-            {id_mode_auto, UserMode::firmware_auto},
-            {id_mode_full, UserMode::full_speed},
-        };
-        for (const auto &entry : modes)
-        {
-            AppendMenuW(menu, MF_STRING, entry.id, mode_label(entry.mode).c_str());
+            AppendMenuW(handle, MF_STRING, item.id, mode_label(item.mode).c_str());
         }
-        CheckMenuRadioItem(
-            menu,
-            id_mode_curve,
-            id_mode_full,
-            m_config.mode == UserMode::firmware_auto ? id_mode_auto
-                                                     : (m_config.mode == UserMode::full_speed ? id_mode_full
-                                                                                              : id_mode_curve),
-            MF_BYCOMMAND
-        );
-        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(
-            menu,
-            MF_STRING | (autostart::is_enabled(m_exe) ? MF_CHECKED : MF_UNCHECKED),
-            id_autostart,
-            L"Start with Windows"
-        );
-        AppendMenuW(menu, MF_STRING, id_edit_settings, L"Edit settings");
-        AppendMenuW(menu, MF_STRING, id_reload_settings, L"Reload settings");
-        AppendMenuW(menu, MF_STRING, id_open_log, L"Open log");
-        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(menu, MF_STRING, id_exit, L"Exit (fans back to firmware Auto)");
+        CheckMenuRadioItem(handle, MODE_ITEMS.front().id, MODE_ITEMS.back().id, menu_id(m_config.mode), MF_BYCOMMAND);
+        AppendMenuW(handle, MF_SEPARATOR, 0, nullptr);
 
-        // Required for the menu to close when the user clicks elsewhere.
+        const UINT autostart_state = autostart::is_enabled(m_exe) ? MF_CHECKED : MF_UNCHECKED;
+        AppendMenuW(handle, MF_STRING | autostart_state, MENU_AUTOSTART, L"Start with Windows");
+        AppendMenuW(handle, MF_STRING, MENU_EDIT_SETTINGS, L"Edit settings");
+        AppendMenuW(handle, MF_STRING, MENU_RELOAD_SETTINGS, L"Reload settings");
+        AppendMenuW(handle, MF_STRING, MENU_OPEN_LOG, L"Open log");
+        AppendMenuW(handle, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(handle, MF_STRING, MENU_EXIT, L"Exit (fans back to firmware Auto)");
+
+        // The menu closes on a click elsewhere only while its window is in the foreground.
         SetForegroundWindow(m_window);
-        TrackPopupMenuEx(menu, TPM_RIGHTBUTTON | TPM_BOTTOMALIGN, at.x, at.y, m_window, nullptr);
+        TrackPopupMenuEx(handle, TPM_RIGHTBUTTON | TPM_BOTTOMALIGN, at.x, at.y, m_window, nullptr);
         PostMessageW(m_window, WM_NULL, 0, 0);
-        DestroyMenu(menu);
     }
 
     void App::on_command(UINT id)
     {
+        if (const auto item = std::ranges::find(MODE_ITEMS, id, &ModeItem::id); item != MODE_ITEMS.end())
+        {
+            set_mode(item->mode);
+            return;
+        }
         switch (id)
         {
-        case id_mode_curve:
-            set_mode(UserMode::curve);
-            break;
-        case id_mode_auto:
-            set_mode(UserMode::firmware_auto);
-            break;
-        case id_mode_full:
-            set_mode(UserMode::full_speed);
-            break;
-        case id_autostart:
+        case MENU_AUTOSTART:
             toggle_autostart();
             break;
-        case id_edit_settings:
+        case MENU_EDIT_SETTINGS:
             open_file(m_ini);
             break;
-        case id_reload_settings:
+        case MENU_RELOAD_SETTINGS:
             reload_settings();
             break;
-        case id_open_log:
+        case MENU_OPEN_LOG:
             open_file(m_log.file());
             break;
-        case id_exit:
+        case MENU_EXIT:
             DestroyWindow(m_window);
             break;
         default:
@@ -360,7 +364,10 @@ namespace AcerFan
     void App::set_mode(UserMode mode)
     {
         m_config.mode = mode;
-        save_mode(m_ini, mode);
+        if (const Result<void> saved = save_mode(m_ini, mode); !saved)
+        {
+            m_log.write("settings: " + saved.error().message());
+        }
         if (m_service)
         {
             m_service->set_mode(mode);
@@ -369,50 +376,46 @@ namespace AcerFan
 
     void App::reload_settings()
     {
-        std::vector<std::string> warnings;
-        AppConfig config = load_config(m_ini, warnings);
-        for (const std::string &warning : warnings)
-        {
-            m_log.write("settings: " + warning);
-        }
-        m_config = config;
+        LoadedConfig loaded = load_config(m_ini);
+        log_warnings(loaded.warnings);
+        m_config = loaded.config;
         if (m_service)
         {
-            m_service->reload(std::move(config));
+            m_service->reload(std::move(loaded.config));
         }
-        if (!warnings.empty())
+        if (!loaded.warnings.empty())
         {
             const std::wstring text = std::format(
-                L"{} setting(s) were invalid and use their defaults. Details are in AcerFan.log.",
-                warnings.size()
+                L"{} setting(s) were invalid and use their defaults. AcerFan.log has the details.",
+                loaded.warnings.size()
             );
             MessageBoxW(m_window, text.c_str(), L"AcerFan", MB_OK | MB_ICONWARNING);
         }
     }
 
-    void App::toggle_autostart()
+    void App::log_warnings(const std::vector<std::string> &warnings)
     {
-        try
+        for (const std::string &warning : warnings)
         {
-            if (autostart::is_enabled(m_exe))
-            {
-                autostart::disable();
-                m_log.write("start with Windows: off");
-            }
-            else
-            {
-                autostart::enable(m_exe);
-                m_log.write("start with Windows: on");
-            }
-        }
-        catch (const ComError &error)
-        {
-            m_log.write(std::format("start with Windows failed: {}", error.what()));
-            MessageBoxW(m_window, to_wide(error.what()).c_str(), L"AcerFan", MB_OK | MB_ICONERROR);
+            m_log.write("settings: " + warning);
         }
     }
 
-    void App::shutdown()
+    void App::toggle_autostart()
+    {
+        const bool enable = !autostart::is_enabled(m_exe);
+        const Result<void> changed = enable ? autostart::enable(m_exe) : autostart::disable();
+        if (!changed)
+        {
+            const std::string message = changed.error().message();
+            m_log.write("start with Windows failed: " + message);
+            MessageBoxW(m_window, to_wide(message).c_str(), L"AcerFan", MB_OK | MB_ICONERROR);
+            return;
+        }
+        m_log.write(enable ? "start with Windows: on" : "start with Windows: off");
+    }
+
+    void App::shutdown() noexcept
     {
         if (m_service)
         {

@@ -1,6 +1,6 @@
 /**
  * @file tests/check.hpp
- * @brief The assertion the plain unit tests share. No framework: the exit code is the verdict.
+ * @brief The assertion of the plain unit tests. No framework: the exit code is the verdict.
  */
 #ifndef ACERFAN_TESTS_CHECK_HPP
 #define ACERFAN_TESTS_CHECK_HPP
@@ -9,7 +9,7 @@
 
 namespace AcerFan::tests
 {
-    /// Failed checks so far in this process.
+    /// Counts the failed checks of this process.
     inline int s_failures = 0;
 
     /** @brief Records a failed check with its source text and line. */
@@ -22,7 +22,7 @@ namespace AcerFan::tests
         }
     }
 
-    /** @brief Prints the verdict and returns the process exit code. */
+    /** @brief Prints the verdict of `suite` and returns the process exit code. */
     inline int finish(const char *suite)
     {
         std::printf("%s: %s (%d failure(s))\n", suite, s_failures == 0 ? "PASS" : "FAIL", s_failures);
@@ -30,6 +30,7 @@ namespace AcerFan::tests
     }
 } // namespace AcerFan::tests
 
+/// Records a failed check of `cond`.
 #define CHECK(cond) ::AcerFan::tests::check((cond), #cond, __LINE__)
 
 #endif // ACERFAN_TESTS_CHECK_HPP

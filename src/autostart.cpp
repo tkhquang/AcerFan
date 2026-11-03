@@ -9,51 +9,54 @@
 #include <wrl/client.h>
 
 #include <array>
-#include <cwctype>
 #include <format>
 #include <string>
-
-using Microsoft::WRL::ComPtr;
+#include <string_view>
 
 namespace AcerFan::autostart
 {
     namespace
     {
-        constexpr std::wstring_view task_name = L"AcerFan";
+        using Microsoft::WRL::ComPtr;
 
-        ComPtr<ITaskFolder> root_folder()
+        constexpr std::wstring_view TASK_NAME = L"AcerFan";
+        constexpr std::size_t MAX_USER_NAME_CHARS = 512;
+
+        Result<ComPtr<ITaskFolder>> root_folder()
         {
             ComPtr<ITaskService> service;
-            check_hr(
+            ACERFAN_TRY_VOID(check_hr(
                 CoCreateInstance(CLSID_TaskScheduler, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&service)),
                 "create the Task Scheduler service"
-            );
-            VARIANT empty;
-            VariantInit(&empty);
-            check_hr(service->Connect(empty, empty, empty, empty), "connect to Task Scheduler");
-            ComPtr<ITaskFolder> folder;
+            ));
+            const Variant empty;
+            ACERFAN_TRY_VOID(check_hr(
+                service->Connect(empty.get(), empty.get(), empty.get(), empty.get()),
+                "connect to Task Scheduler"
+            ));
             const Bstr root{L"\\"};
-            check_hr(service->GetFolder(root.get(), &folder), "open the root task folder");
+            ComPtr<ITaskFolder> folder;
+            ACERFAN_TRY_VOID(check_hr(service->GetFolder(root.get(), &folder), "open the root task folder"));
             return folder;
         }
 
-        std::wstring current_user()
+        Result<std::wstring> current_user()
         {
-            std::array<wchar_t, 512> name{};
+            std::array<wchar_t, MAX_USER_NAME_CHARS> name{};
             ULONG size = static_cast<ULONG>(name.size());
             if (GetUserNameExW(NameSamCompatible, name.data(), &size) == FALSE)
             {
-                throw ComError("read the current user name", HRESULT_FROM_WIN32(GetLastError()));
+                return fail_last_error("read the current user name");
             }
-            return name.data();
+            return std::wstring{name.data()};
         }
 
         std::wstring xml_escape(std::wstring_view text)
         {
             std::wstring out;
-            for (const wchar_t c : text)
+            for (const wchar_t character : text)
             {
-                switch (c)
+                switch (character)
                 {
                 case L'&':
                     out += L"&amp;";
@@ -68,24 +71,14 @@ namespace AcerFan::autostart
                     out += L"&quot;";
                     break;
                 default:
-                    out += c;
+                    out += character;
                 }
             }
             return out;
         }
 
-        std::wstring lowercase(std::wstring text)
+        std::wstring task_xml(const std::filesystem::path &exe, std::wstring_view user)
         {
-            for (wchar_t &c : text)
-            {
-                c = static_cast<wchar_t>(std::towlower(c));
-            }
-            return text;
-        }
-
-        std::wstring task_xml(const std::filesystem::path &exe, const std::wstring &user)
-        {
-            const std::wstring u = xml_escape(user);
             return std::format(
                 LR"(<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
@@ -126,70 +119,86 @@ namespace AcerFan::autostart
   </Actions>
 </Task>
 )",
-                u,
+                xml_escape(user),
                 xml_escape(exe.native()),
                 xml_escape(exe.parent_path().native())
             );
+        }
+
+        // True when the action at the 1-based `index` runs `exe`. Windows paths compare without case.
+        bool action_runs(IActionCollection &actions, LONG index, const std::filesystem::path &exe)
+        {
+            ComPtr<IAction> action;
+            ComPtr<IExecAction> exec;
+            Bstr path;
+            if (FAILED(actions.get_Item(index, &action)) || FAILED(action.As(&exec)) ||
+                FAILED(exec->get_Path(path.put())))
+            {
+                return false;
+            }
+            return path.get() != nullptr && CompareStringOrdinal(path.get(), -1, exe.c_str(), -1, TRUE) == CSTR_EQUAL;
         }
     } // namespace
 
     bool is_enabled(const std::filesystem::path &exe)
     {
-        try
-        {
-            const ComPtr<ITaskFolder> folder = root_folder();
-            const Bstr name{task_name};
-            ComPtr<IRegisteredTask> task;
-            if (FAILED(folder->GetTask(name.get(), &task)))
-            {
-                return false;
-            }
-            BSTR xml = nullptr;
-            if (FAILED(task->get_Xml(&xml)) || xml == nullptr)
-            {
-                return false;
-            }
-            const std::wstring text = lowercase(xml);
-            SysFreeString(xml);
-            return text.find(lowercase(xml_escape(exe.native()))) != std::wstring::npos;
-        }
-        catch (const ComError &)
+        const Result<ComPtr<ITaskFolder>> folder = root_folder();
+        if (!folder)
         {
             return false;
         }
+        const Bstr name{TASK_NAME};
+        ComPtr<IRegisteredTask> task;
+        ComPtr<ITaskDefinition> definition;
+        ComPtr<IActionCollection> actions;
+        LONG count = 0;
+        if (FAILED((*folder)->GetTask(name.get(), &task)) || FAILED(task->get_Definition(&definition)) ||
+            FAILED(definition->get_Actions(&actions)) || FAILED(actions->get_Count(&count)))
+        {
+            return false;
+        }
+        for (LONG i = 1; i <= count; ++i)
+        {
+            if (action_runs(*actions.Get(), i, exe))
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
-    void enable(const std::filesystem::path &exe)
+    Result<void> enable(const std::filesystem::path &exe)
     {
-        const ComPtr<ITaskFolder> folder = root_folder();
-        const Bstr name{task_name};
-        const Bstr xml{task_xml(exe, current_user())};
-        VARIANT empty;
-        VariantInit(&empty);
+        ACERFAN_TRY(folder, root_folder());
+        ACERFAN_TRY(user, current_user());
+        const Bstr name{TASK_NAME};
+        const Bstr xml{task_xml(exe, user)};
+        const Variant empty;
         ComPtr<IRegisteredTask> task;
-        check_hr(
+        return check_hr(
             folder->RegisterTask(
                 name.get(),
                 xml.get(),
                 TASK_CREATE_OR_UPDATE,
-                empty,
-                empty,
+                empty.get(),
+                empty.get(),
                 TASK_LOGON_INTERACTIVE_TOKEN,
-                empty,
+                empty.get(),
                 &task
             ),
             "register the AcerFan logon task"
         );
     }
 
-    void disable()
+    Result<void> disable()
     {
-        const ComPtr<ITaskFolder> folder = root_folder();
-        const Bstr name{task_name};
+        ACERFAN_TRY(folder, root_folder());
+        const Bstr name{TASK_NAME};
         const HRESULT hr = folder->DeleteTask(name.get(), 0);
-        if (hr != HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND))
+        if (hr == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND))
         {
-            check_hr(hr, "delete the AcerFan logon task");
+            return {};
         }
+        return check_hr(hr, "delete the AcerFan logon task");
     }
 } // namespace AcerFan::autostart

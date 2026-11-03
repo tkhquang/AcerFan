@@ -1,6 +1,6 @@
-﻿/**
+/**
  * @file fan_service.hpp
- * @brief Background thread that reads the sensors, runs FanController and drives the fans.
+ * @brief The worker thread that reads the sensors, runs FanController and drives the fans.
  */
 #ifndef ACERFAN_FAN_SERVICE_HPP
 #define ACERFAN_FAN_SERVICE_HPP
@@ -20,46 +20,80 @@
 
 namespace AcerFan
 {
-    /// Snapshot for the tray icon and menu.
+    /**
+     * @brief A snapshot of the fan service for the tray icon and menu.
+     */
     struct FanStatus
     {
+        /// True while the firmware interface answers.
         bool connected{false};
-        std::string error; ///< Last connection or read error; empty while everything works.
+        /// Holds the latest connection or read error, empty while everything works.
+        std::string error;
+        /// Latest CPU temperature in degrees Celsius.
         std::optional<int> cpu_c;
+        /// Latest GPU temperature in degrees Celsius.
         std::optional<int> gpu_c;
-        int cpu_base{0}; ///< Baseline temperature the curves act on.
-        int gpu_base{0};
+        /// CPU baseline temperature that the curves act on.
+        int cpu_baseline_c{0};
+        /// GPU baseline temperature that the curves act on.
+        int gpu_baseline_c{0};
+        /// Latest CPU fan speed in rpm.
         std::optional<int> cpu_rpm;
+        /// Latest GPU fan speed in rpm.
         std::optional<int> gpu_rpm;
-        UserMode mode{UserMode::curve};
-        FanCommand command; ///< What the fans are set to.
+        /// Names the mode that the user picked in the tray menu.
+        UserMode mode{UserMode::Curve};
+        /// Holds the setting that AcerFan last applied to the fans.
+        FanCommand command;
+        /// True while the fail-safe speed applies.
         bool failsafe{false};
     };
 
+    /**
+     * @brief The worker thread that reads the sensors, runs FanController and drives the fans.
+     * @details Any thread can call the public methods. The worker thread owns the firmware connection and makes every
+     *          firmware call.
+     */
     class FanService
     {
     public:
-        /// Starts the worker thread. `on_status` runs on that thread after every poll; keep it cheap (PostMessage).
+        /**
+         * @brief Starts the worker thread.
+         * @param log Receives the decisions and errors. It must outlive the service.
+         * @param config Holds the initial settings.
+         * @param on_status Runs on the worker thread after every poll. It must return fast, for example after a
+         *                  PostMessage call.
+         */
         FanService(Logger &log, AppConfig config, std::function<void()> on_status);
-        ~FanService();
+
+        /** @brief Calls stop(). */
+        ~FanService() noexcept;
 
         FanService(const FanService &) = delete;
         FanService &operator=(const FanService &) = delete;
         FanService(FanService &&) = delete;
         FanService &operator=(FanService &&) = delete;
 
-        /// Hands the fans back to firmware Auto and joins the thread. Safe to call more than once.
-        void stop();
+        /**
+         * @brief Hands the fans back to firmware Auto and joins the worker thread.
+         * @details A second call does nothing.
+         */
+        void stop() noexcept;
 
-        void set_mode(UserMode mode);
+        /** @brief Switches to `mode` at the next poll. */
+        void set_mode(UserMode mode) noexcept;
+
+        /** @brief Replaces every setting with `config` at the next poll. */
         void reload(AppConfig config);
 
-        /// After sleep or hibernation: reconnect and re-apply the fan state.
-        void resumed();
+        /** @brief Reconnects and re-applies the fan setting at the next poll, after sleep or hibernation. */
+        void resumed() noexcept;
 
+        /** @brief Returns a copy of the latest status. */
         [[nodiscard]] FanStatus status() const;
 
     private:
+        // Requests from other threads. The worker takes them at the start of each poll.
         struct Requests
         {
             std::optional<UserMode> mode;
@@ -69,12 +103,13 @@ namespace AcerFan
             [[nodiscard]] bool any() const noexcept { return mode || config || resumed; }
         };
 
-        void run(std::stop_token stop);
-        void control_loop(std::stop_token stop);
-        void publish(const FanStatus &status);
+        // The state of the worker thread. fan_service.cpp defines it.
+        class Loop;
 
-        /// Sleeps for `duration`, waking early on a stop request or a new request.
-        void wait(std::stop_token stop, std::chrono::milliseconds duration);
+        void run(std::stop_token stop) noexcept;
+        [[nodiscard]] Requests take_requests();
+        void publish(const FanStatus &status);
+        void wait(const std::stop_token &stop, std::chrono::milliseconds duration);
 
         Logger &m_log;
         std::function<void()> m_on_status;
@@ -85,7 +120,8 @@ namespace AcerFan
         Requests m_requests;
         FanStatus m_status;
 
-        std::jthread m_thread; // Last member: joined before the state above is destroyed.
+        // The last member: the thread joins before the state above is destroyed.
+        std::jthread m_thread;
     };
 } // namespace AcerFan
 

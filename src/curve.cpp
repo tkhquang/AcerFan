@@ -1,38 +1,18 @@
 #include "curve.hpp"
 
-#include <charconv>
+#include "text.hpp"
+
 #include <cmath>
+#include <cstddef>
 #include <format>
-#include <utility>
 
 namespace AcerFan
 {
     namespace
     {
-        constexpr int max_percent = 100;
-
-        std::string_view trim(std::string_view text) noexcept
-        {
-            const auto first = text.find_first_not_of(" \t");
-            if (first == std::string_view::npos)
-            {
-                return {};
-            }
-            const auto last = text.find_last_not_of(" \t");
-            return text.substr(first, last - first + 1);
-        }
-
-        std::optional<int> parse_int(std::string_view text) noexcept
-        {
-            text = trim(text);
-            int value{};
-            const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), value);
-            if (error != std::errc{} || end != text.data() + text.size())
-            {
-                return std::nullopt;
-            }
-            return value;
-        }
+        constexpr int MIN_PERCENT = 1;
+        constexpr int MAX_PERCENT = 100;
+        constexpr std::size_t MIN_POINTS = 2;
     } // namespace
 
     int FanCurve::percent_at(double temp_c) const noexcept
@@ -43,12 +23,12 @@ namespace AcerFan
         }
         for (std::size_t i = 1; i < m_points.size(); ++i)
         {
-            const CurvePoint &hi = m_points[i];
-            if (temp_c <= hi.temp_c)
+            const CurvePoint &upper = m_points[i];
+            if (temp_c <= upper.temp_c)
             {
-                const CurvePoint &lo = m_points[i - 1];
-                const double t = (temp_c - lo.temp_c) / static_cast<double>(hi.temp_c - lo.temp_c);
-                return static_cast<int>(std::lround(lo.percent + t * (hi.percent - lo.percent)));
+                const CurvePoint &lower = m_points[i - 1];
+                const double fraction = (temp_c - lower.temp_c) / static_cast<double>(upper.temp_c - lower.temp_c);
+                return static_cast<int>(std::lround(lower.percent + fraction * (upper.percent - lower.percent)));
             }
         }
         return m_points.back().percent;
@@ -84,7 +64,7 @@ namespace AcerFan
         while (!trim(text).empty())
         {
             const auto comma = text.find(',');
-            const std::string_view item = trim(text.substr(0, comma));
+            const std::string_view item = text.substr(0, comma);
             text = comma == std::string_view::npos ? std::string_view{} : text.substr(comma + 1);
 
             const auto colon = item.find(':');
@@ -92,19 +72,19 @@ namespace AcerFan
             {
                 return std::nullopt;
             }
-            const auto temp = parse_int(item.substr(0, colon));
-            const auto percent = parse_int(item.substr(colon + 1));
-            if (!temp || !percent || *percent < 1 || *percent > max_percent)
+            const std::optional<int> temp_c = parse_int(item.substr(0, colon));
+            const std::optional<int> percent = parse_int(item.substr(colon + 1));
+            if (!temp_c || !percent || *percent < MIN_PERCENT || *percent > MAX_PERCENT)
             {
                 return std::nullopt;
             }
-            if (!points.empty() && (*temp <= points.back().temp_c || *percent < points.back().percent))
+            if (!points.empty() && (*temp_c <= points.back().temp_c || *percent < points.back().percent))
             {
                 return std::nullopt;
             }
-            points.push_back({*temp, *percent});
+            points.push_back({*temp_c, *percent});
         }
-        if (points.size() < 2)
+        if (points.size() < MIN_POINTS)
         {
             return std::nullopt;
         }

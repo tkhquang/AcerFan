@@ -15,7 +15,10 @@
         "value": "host=x64",
         "strategy": "set"
       },
-      "binaryDir": "${sourceDir}/build/msvc"
+      "binaryDir": "${sourceDir}/build/msvc",
+      "cacheVariables": {
+        "CMAKE_COMPILE_WARNING_AS_ERROR": "ON"
+      }
     }
   ],
   "buildPresets": [

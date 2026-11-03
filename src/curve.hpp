@@ -1,6 +1,6 @@
 /**
  * @file curve.hpp
- * @brief Piecewise-linear temperature to fan-speed curve.
+ * @brief The piecewise-linear map from a temperature to a fan speed.
  */
 #ifndef ACERFAN_CURVE_HPP
 #define ACERFAN_CURVE_HPP
@@ -8,51 +8,67 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace AcerFan
 {
-    /// One curve point: at `temp_c` degrees Celsius the fans run at `percent`.
+    /**
+     * @brief One point of a FanCurve.
+     */
     struct CurvePoint
     {
-        int temp_c{};
-        int percent{};
+        /// Temperature in degrees Celsius.
+        int temp_c{0};
+        /// Fan speed in percent at `temp_c`.
+        int percent{0};
+
+        /// Equal when both fields are equal.
+        friend bool operator==(const CurvePoint &, const CurvePoint &) = default;
     };
 
     /**
-     * @brief Maps a temperature to a fan percentage, linear between points.
-     * @details Below the first point the curve asks for nothing (0), which leaves the fans to the firmware's own
-     *          Auto mode. Above the last point it asks for the last point's percentage.
+     * @brief Maps a temperature to a fan percent, linear between the points.
+     * @details Below the first point the curve asks for 0, which leaves the fans to the Auto mode of the firmware.
+     *          Above the last point it asks for the percent of the last point.
      */
     class FanCurve
     {
     public:
+        /** @brief Creates an empty curve that always asks for 0. */
         FanCurve() = default;
 
-        /// Takes points already validated by parse_curve(): two or more, temperatures strictly increasing.
-        explicit FanCurve(std::vector<CurvePoint> points) : m_points(std::move(points)) {}
+        /**
+         * @brief Takes points that parse_curve() accepted.
+         * @details The points must number two or more, with strictly increasing temperatures.
+         */
+        explicit FanCurve(std::vector<CurvePoint> points) noexcept : m_points(std::move(points)) {}
 
-        /// Fan percentage requested at `temp_c`; 0 below the first point.
+        /** @brief Returns the fan percent at `temp_c`, 0 below the first point. */
         [[nodiscard]] int percent_at(double temp_c) const noexcept;
 
-        /// Percentage of the first point, the lowest speed the curve ever asks for.
+        /** @brief Returns the percent of the first point, the lowest speed that the curve asks for. */
         [[nodiscard]] int floor_percent() const noexcept;
 
-        /// Percentage of the last point, the highest speed the curve ever asks for.
+        /** @brief Returns the percent of the last point, the highest speed that the curve asks for. */
         [[nodiscard]] int ceiling_percent() const noexcept;
 
-        /// The "80:40, 84:60" form parse_curve() reads.
+        /** @brief Formats the curve in the "80:40, 84:60" form that parse_curve() reads. */
         [[nodiscard]] std::string to_string() const;
 
+        /// Returns the points of the curve.
         [[nodiscard]] const std::vector<CurvePoint> &points() const noexcept { return m_points; }
+
+        /// Equal when both curves have the same points.
+        friend bool operator==(const FanCurve &, const FanCurve &) = default;
 
     private:
         std::vector<CurvePoint> m_points;
     };
 
     /**
-     * @brief Parses a curve written as "80:40, 84:60, 87:80, 89:100" (temperature : percent).
-     * @return The curve, or std::nullopt unless there are at least two points, temperatures strictly increase,
+     * @brief Parses a curve in the form "80:40, 84:60, 87:80, 89:100", each point as temperature:percent.
+     * @return The curve, or std::nullopt unless it has two or more points, the temperatures strictly increase, and the
      *         percentages lie in 1..100 and never decrease.
      */
     [[nodiscard]] std::optional<FanCurve> parse_curve(std::string_view text);
