@@ -1,0 +1,33 @@
+---
+# Same conventions as DetourModKit and AnimationFramework.
+Language: Cpp
+BasedOnStyle: LLVM
+Standard: Latest
+ColumnLimit: 120
+ReflowComments: Always
+CommentPragmas: '^ IWYU pragma:|^ {3,}'
+BreakStringLiterals: false
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ContinuationIndentWidth: 4
+AccessModifierOffset: -4
+NamespaceIndentation: All
+BreakBeforeBraces: Allman
+PointerAlignment: Right
+ReferenceAlignment: Right
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortBlocksOnASingleLine: Never
+AllowShortIfStatementsOnASingleLine: false
+AllowShortLoopsOnASingleLine: false
+AllowShortCaseLabelsOnASingleLine: false
+AlignAfterOpenBracket: BlockIndent
+BinPackArguments: false
+AllowAllArgumentsOnNextLine: false
+BinPackParameters: OnePerLine
+AllowAllParametersOfDeclarationOnNextLine: false
+BreakFunctionDefinitionParameters: false
+SortIncludes: Never
+IncludeBlocks: Preserve
+SpaceAfterTemplateKeyword: true
+FixNamespaceComments: true
