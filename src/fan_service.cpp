@@ -139,7 +139,8 @@ namespace AcerFan
         auto next_status_log = Clock::now();
 
         m_log.write(std::format(
-            "started; mode {}; CPU curve {}; GPU curve {}",
+            "AcerFan {} started; mode {}; CPU curve {}; GPU curve {}",
+            ACERFAN_VERSION,
             mode_name(config.mode),
             config.controller.cpu_curve.to_string(),
             config.controller.gpu_curve.to_string()

@@ -1,0 +1,225 @@
+name: Version Bump and Release
+
+permissions:
+  contents: write
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_part:
+        description: "Version part to bump"
+        required: true
+        default: "patch"
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      version_title:
+        description: "Version title (defaults to the heading in docs/NEXT_CHANGELOG.md)"
+        required: false
+        type: string
+      prerelease:
+        description: "Is this a pre-release?"
+        required: false
+        default: false
+        type: boolean
+
+# Releases share the version in CMakeLists.txt and the tag namespace across branches.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  bump-and-release:
+    # The CMake preset uses the Visual Studio 17 2022 generator.
+    runs-on: windows-2022
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check release branch
+        run: |
+          if ($env:GITHUB_REF_TYPE -ne 'branch') {
+            throw 'Run this workflow on a branch, not a tag.'
+          }
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.10"
+
+      - name: Read changelog and determine title
+        id: read-changelog
+        env:
+          TITLE_INPUT: ${{ inputs.version_title }}
+        run: |
+          $content = Get-Content -LiteralPath 'docs/NEXT_CHANGELOG.md' -Raw -Encoding utf8
+          $lines = $content -split "`r?`n"
+          if ($lines[0] -notmatch '^##\s+(.+)$') {
+            throw 'NEXT_CHANGELOG.md must start with ## followed by a release title.'
+          }
+          $suggestedTitle = $matches[1].Trim()
+          if ($suggestedTitle -eq '[Title for next release]') {
+            throw 'Replace the NEXT_CHANGELOG.md template with release notes before publishing.'
+          }
+          $title = ([string]$env:TITLE_INPUT).Trim()
+          if ([string]::IsNullOrWhiteSpace($title)) { $title = $suggestedTitle }
+          if ($title -match '[\r\n]') { throw 'The release title must be a single line.' }
+          $changelog = ($lines | Select-Object -Skip 1) -join "`n"
+          if ([string]::IsNullOrWhiteSpace($changelog)) { throw 'The changelog must not be empty.' }
+          $notesPath = Join-Path $env:RUNNER_TEMP 'acerfan-changelog.txt'
+          Set-Content -LiteralPath $notesPath -Value $changelog.Trim() -Encoding utf8
+          "TITLE=$title" >> $env:GITHUB_OUTPUT
+          "NOTES_PATH=$notesPath" >> $env:GITHUB_OUTPUT
+
+      - name: Bump version and update changelog
+        env:
+          VERSION_PART: ${{ inputs.version_part }}
+          RELEASE_TITLE: ${{ steps.read-changelog.outputs.TITLE }}
+          NOTES_PATH: ${{ steps.read-changelog.outputs.NOTES_PATH }}
+        run: |
+          python scripts/version_updater.py bump $env:VERSION_PART --title $env:RELEASE_TITLE --changelog-file $env:NOTES_PATH
+          if ($LASTEXITCODE -ne 0) { throw 'Version update failed.' }
+
+          $cmake = Get-Content 'CMakeLists.txt' -Raw
+          $version = [regex]::Match($cmake, 'project\(\s*AcerFan\s+VERSION\s+(\d+\.\d+\.\d+)').Groups[1].Value
+          if (-not $version) { throw 'No X.Y.Z version in CMakeLists.txt.' }
+          $tag = "v$version"
+          git show-ref --verify --quiet "refs/tags/$tag"
+          if ($LASTEXITCODE -eq 0) { throw "Tag $tag already exists. Choose a different version bump." }
+          if ($LASTEXITCODE -ne 1) { throw 'Failed to check existing release tags.' }
+          "NEW_VERSION=$version" >> $env:GITHUB_ENV
+          "VERSION_TAG=$tag" >> $env:GITHUB_ENV
+          "ARTIFACT_NAME=AcerFan_$tag.zip" >> $env:GITHUB_ENV
+          # show-ref returns 1 for the expected missing tag, which is not a step failure.
+          exit 0
+
+      - name: Build app and tests
+        run: |
+          cmake --preset msvc
+          if ($LASTEXITCODE -ne 0) { throw 'CMake configure failed.' }
+          cmake --build --preset release --parallel
+          if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }
+          $exe = 'build\msvc\Release\AcerFan.exe'
+          if (-not (Test-Path $exe)) { throw "$exe was not produced" }
+          $built = (Get-Item $exe).VersionInfo.ProductVersion
+          if ($built -ne $env:NEW_VERSION) { throw "AcerFan.exe reports version '$built', expected $env:NEW_VERSION." }
+
+      - name: Run unit tests
+        run: |
+          ctest --preset release
+          if ($LASTEXITCODE -ne 0) { throw 'Unit tests failed.' }
+
+      # One folder the user extracts and keeps: AcerFan writes AcerFan.ini and AcerFan.log next to the exe.
+      - name: Assemble release archive
+        run: |
+          $package = Join-Path $env:RUNNER_TEMP 'package\AcerFan'
+          New-Item -ItemType Directory -Force -Path $package | Out-Null
+          Copy-Item 'build\msvc\Release\AcerFan.exe' $package
+          Copy-Item 'LICENSE' (Join-Path $package 'LICENSE.txt')
+          Compress-Archive -Path $package -DestinationPath $env:ARTIFACT_NAME -Force
+          Get-ChildItem -Recurse $package | Select-Object FullName, Length | Format-Table -AutoSize | Out-String -Width 200
+          $exeHash = (Get-FileHash (Join-Path $package 'AcerFan.exe') -Algorithm SHA256).Hash.ToLowerInvariant()
+          "EXE_SHA256=$exeHash" >> $env:GITHUB_ENV
+
+      - name: Prepare release body
+        id: prepare-release
+        env:
+          RELEASE_TITLE: ${{ steps.read-changelog.outputs.TITLE }}
+          NOTES_PATH: ${{ steps.read-changelog.outputs.NOTES_PATH }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          $changelog = Get-Content -LiteralPath $env:NOTES_PATH -Raw -Encoding utf8
+          $releaseBody = @'
+          # AcerFan {0} - {1}
+
+          A small tray app that runs the fans of an Acer laptop from the CPU and GPU temperatures, so the chips stay below their throttle points. It leaves the fans to Acer's own Auto mode while the chips are cool.
+
+          ## Changelog
+
+          {2}
+
+          ## Install
+
+          1. Extract the archive to a folder you keep, for example `C:\Tools\AcerFan`. AcerFan writes `AcerFan.ini` and `AcerFan.log` next to the exe.
+          2. Close PredatorSense, NitroSense or ConceptD Palette, or set their fans to Auto, so they do not fight over the fans.
+          3. Run `AcerFan.exe` and accept the administrator prompt: the firmware fan methods only answer elevated apps. The exe is not code-signed, so SmartScreen may ask first (More info, then Run anyway).
+          4. Right-click the tray icon and tick **Start with Windows**.
+
+          Tested on Acer ConceptD 9 (CN917-71) only. Other Acer laptops with PredatorSense, NitroSense or ConceptD Palette use the same firmware interface and will probably work. See the [README](https://github.com/{3}/blob/{0}/README.md) for how it works and the settings.
+
+          SHA-256 of `AcerFan.exe`: `{4}`
+          '@
+          $releaseBody = $releaseBody -f $env:VERSION_TAG, $env:RELEASE_TITLE, $changelog.Trim(), $env:GITHUB_REPOSITORY, $env:EXE_SHA256
+          if ($env:PRERELEASE -eq 'true') {
+            $releaseBody = "## PRE-RELEASE VERSION`n`nThis build is for testing and may contain bugs or incomplete features.`n`n" + $releaseBody
+          }
+          $bodyPath = Join-Path $env:RUNNER_TEMP 'acerfan-release-body.md'
+          Set-Content -LiteralPath $bodyPath -Value $releaseBody -Encoding utf8
+          "RELEASE_BODY_PATH=$bodyPath" >> $env:GITHUB_OUTPUT
+
+      - name: Commit version changes and create release tag
+        env:
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          git config --local user.email 'github-actions[bot]@users.noreply.github.com'
+          git config --local user.name 'github-actions[bot]'
+          git add -- CMakeLists.txt CHANGELOG.md
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to stage version changes.' }
+          git commit -m "Bump AcerFan version to $env:NEW_VERSION"
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to commit version changes.' }
+          git tag -a $env:VERSION_TAG -m "Release $env:VERSION_TAG"
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to create release tag.' }
+
+          # The tag always contains the source used to build the archive. Pre-releases keep
+          # the bump on the tag only, leaving the selected branch and pending notes untouched.
+          if ($env:PRERELEASE -eq 'true') {
+            git push origin "refs/tags/$env:VERSION_TAG"
+          } else {
+            git push --atomic origin "HEAD:refs/heads/$env:GITHUB_REF_NAME" "refs/tags/$env:VERSION_TAG"
+          }
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to push release changes.' }
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          files: ${{ env.ARTIFACT_NAME }}
+          name: AcerFan ${{ env.VERSION_TAG }}
+          tag_name: ${{ env.VERSION_TAG }}
+          body_path: ${{ steps.prepare-release.outputs.RELEASE_BODY_PATH }}
+          draft: false
+          prerelease: ${{ inputs.prerelease }}
+
+      - name: Archive NEXT_CHANGELOG.md
+        if: ${{ !inputs.prerelease && success() }}
+        run: |
+          git pull --ff-only origin $env:GITHUB_REF_NAME
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to update the release branch before archiving.' }
+          $archiveDir = 'docs/archive'
+          $notesPath = 'docs/NEXT_CHANGELOG.md'
+          $archivePath = "$archiveDir/CHANGELOG_$env:VERSION_TAG.md"
+          New-Item -ItemType Directory -Path $archiveDir -Force | Out-Null
+          Move-Item -LiteralPath $notesPath -Destination $archivePath
+          $template = @'
+          ## [Title for next release]
+
+          - New feature
+          - Bug fix
+          - Improvement
+          '@
+          Set-Content -LiteralPath $notesPath -Value $template -Encoding utf8
+          git add -- $notesPath $archivePath
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to stage the archived changelog.' }
+          git commit -m "Chore: Archive AcerFan changelog for $env:VERSION_TAG and prepare for next release"
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to commit the archived changelog.' }
+          git push origin "HEAD:refs/heads/$env:GITHUB_REF_NAME"
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to push the archived changelog.' }

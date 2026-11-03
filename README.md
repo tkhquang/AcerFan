@@ -12,6 +12,14 @@ chips are cool and takes over only when heat builds up.
 > PredatorSense, NitroSense or ConceptD Palette expose the same `AcerGamingFunction` interface and will
 > probably work, but sensor and fan ids may differ. Reports are welcome.
 
+## Install
+
+1. Download `AcerFan_vX.Y.Z.zip` from [Releases](https://github.com/tkhquang/AcerFan/releases) and extract it to a
+   folder you keep. AcerFan writes `AcerFan.ini` and `AcerFan.log` next to the exe.
+2. Run `AcerFan.exe` and accept the administrator prompt. The exe is not code-signed, so SmartScreen may ask
+   first (More info, then Run anyway).
+3. Right-click the tray icon and tick **Start with Windows**.
+
 ## How it works
 
 - Every 2 seconds AcerFan reads the CPU and GPU temperatures from the firmware.
@@ -69,6 +77,10 @@ ctest --preset release
 ```
 
 The exe is `build/msvc/Release/AcerFan.exe`, statically linked, no runtime to install.
+
+Releases come from the **Version Bump and Release** workflow (Actions tab): write the notes in
+`docs/NEXT_CHANGELOG.md`, then run it with patch, minor or major. It bumps the version in `CMakeLists.txt`,
+updates `CHANGELOG.md`, tags `vX.Y.Z`, builds and tests on `windows-2022`, and publishes the zip.
 
 ## Firmware interface
 

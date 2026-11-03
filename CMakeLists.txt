@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.28)
 
-project(AcerFan VERSION 0.1.0 DESCRIPTION "Temperature-aware fan control tray app for Acer laptops" LANGUAGES CXX RC)
+# The release workflow bumps this version (scripts/version_updater.py); 0.0.0 = not released yet.
+project(AcerFan VERSION 0.0.0 DESCRIPTION "Temperature-aware fan control tray app for Acer laptops" LANGUAGES CXX RC)
 
 if(NOT MSVC)
     message(FATAL_ERROR "AcerFan builds with MSVC: it uses the WMI and Task Scheduler COM headers of the Windows SDK.")
@@ -39,6 +40,7 @@ add_executable(AcerFan WIN32
 )
 # res/AcerFan.manifest carries the UAC level; the linker's default asInvoker entry would conflict with it.
 target_link_options(AcerFan PRIVATE /MANIFESTUAC:NO)
+target_compile_definitions(AcerFan PRIVATE ACERFAN_VERSION="${PROJECT_VERSION}")
 target_link_libraries(AcerFan PRIVATE
     acerfan_core
     wbemuuid
